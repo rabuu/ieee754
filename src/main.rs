@@ -1,35 +1,39 @@
-use std::{fmt::Display, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use plotters::prelude::*;
 
-use ieee754::{DoubleFloat, QuadrupleFloat, SingleFloat, SmallFloat, Value};
+use ieee754::{DoubleFloat, Ieee754, QuadrupleFloat, SingleFloat, SmallFloat, Value};
+
+mod plot;
 
 #[derive(Debug, Parser)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+
+    /// The float format
+    #[arg(short, long, default_value = "small")]
+    format: FloatFormat,
 }
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    /// Evaluate a single binary float number
     #[command(alias = "eval")]
     Evaluate {
         /// The float number as a sequence of 0s and 1s
         binary: String,
 
-        /// The float format
-        #[arg(short, long, default_value = "single")]
-        format: FloatFormat,
-
+        /// Don't check for special cases like infinity or NaN
         #[arg(short, long)]
         raw: bool,
     },
 
-    /// Plot the distribution of all SmallFloat values
-    Plot {
-        /// Output file where to write the plotted image
-        output_file: PathBuf,
+    /// Show the distribution of all float values (only -f small supported)
+    All {
+        /// Plot the distribution to an image
+        #[arg(long)]
+        plot: Option<PathBuf>,
     },
 }
 
@@ -41,115 +45,66 @@ enum FloatFormat {
     Quadruple,
 }
 
-#[derive(Debug)]
-enum FloatWrapper {
-    Small(SmallFloat),
-    Single(SingleFloat),
-    Double(DoubleFloat),
-    Quadruple(QuadrupleFloat),
-}
-
-impl FloatWrapper {
-    fn parse(binary: &str, format: FloatFormat) -> Result<FloatWrapper, String> {
-        Ok(match format {
-            FloatFormat::Small => FloatWrapper::Small(SmallFloat::parse(binary)?),
-            FloatFormat::Single => FloatWrapper::Single(SingleFloat::parse(binary)?),
-            FloatFormat::Double => FloatWrapper::Double(DoubleFloat::parse(binary)?),
-            FloatFormat::Quadruple => FloatWrapper::Quadruple(QuadrupleFloat::parse(binary)?),
-        })
-    }
-
-    fn raw_value(&self) -> f32 {
-        match self {
-            FloatWrapper::Small(x) => x.raw_value(),
-            FloatWrapper::Single(x) => x.raw_value(),
-            FloatWrapper::Double(x) => x.raw_value(),
-            FloatWrapper::Quadruple(x) => x.raw_value(),
-        }
-    }
-
-    fn evaluate(&self) -> Value {
-        match self {
-            FloatWrapper::Small(x) => x.evaluate(),
-            FloatWrapper::Single(x) => x.evaluate(),
-            FloatWrapper::Double(x) => x.evaluate(),
-            FloatWrapper::Quadruple(x) => x.evaluate(),
-        }
-    }
-}
-
-impl Display for FloatWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FloatWrapper::Small(x) => x.fmt(f),
-            FloatWrapper::Single(x) => x.fmt(f),
-            FloatWrapper::Double(x) => x.fmt(f),
-            FloatWrapper::Quadruple(x) => x.fmt(f),
-        }
-    }
-}
-
-fn evaluate(binary: String, format: FloatFormat, raw: bool) {
-    let f = match FloatWrapper::parse(&binary, format) {
-        Ok(f) => f,
-        Err(err) => {
-            eprintln!("Error: {err}");
-            std::process::exit(1)
-        }
-    };
-
-    let out = if raw {
+fn output_float<const R: usize, const P: usize>(f: Ieee754<R, P>, raw: bool) {
+    let val = if raw {
         Value::Number(f.raw_value(), false)
     } else {
         f.evaluate()
     };
 
-    println!("{f} => {out}");
+    println!("{f} => {val}");
 }
 
-fn plot(path: PathBuf) {
-    let floats = SmallFloat::generate_all()
-        .into_iter()
-        .filter(|f| !f.evaluate().is_nan());
+fn evaluate(binary: String, raw: bool, format: FloatFormat) -> Result<(), String> {
+    match format {
+        FloatFormat::Small => {
+            let f = SmallFloat::parse(&binary)?;
+            output_float(f, raw);
+        }
+        FloatFormat::Single => {
+            let f = SingleFloat::parse(&binary)?;
+            output_float(f, raw);
+        }
+        FloatFormat::Double => {
+            let f = DoubleFloat::parse(&binary)?;
+            output_float(f, raw);
+        }
+        FloatFormat::Quadruple => {
+            let f = QuadrupleFloat::parse(&binary)?;
+            output_float(f, raw);
+        }
+    }
 
-    let root_area = BitMapBackend::new(&path, (1500, 150)).into_drawing_area();
-    root_area.fill(&WHITE).unwrap();
+    Ok(())
+}
 
-    let mut ctx = ChartBuilder::on(&root_area)
-        .margin(10)
-        .set_label_area_size(LabelAreaPosition::Bottom, 20)
-        .build_cartesian_2d(-17.0_f32..17.0_f32, -2..2)
-        .unwrap();
-
-    ctx.draw_series(floats.map(|f| match f.evaluate() {
-        Value::NaN => unreachable!(),
-        Value::NegativeZero => Circle::new((0.0, -1), 3, GREEN.filled()),
-        Value::PositiveZero => Circle::new((0.0, 1), 3, GREEN.filled()),
-        Value::Number(num, denorm) => match denorm {
-            false => Circle::new((num, 0), 2, BLUE.filled()),
-            true => Circle::new((num, 0), 1, RED.filled()),
-        },
-        Value::NegativeInfinity => Circle::new((f.raw_value(), 0), 5, MAGENTA),
-        Value::PositiveInfinity => Circle::new((f.raw_value(), 0), 5, MAGENTA),
-    }))
-    .unwrap();
-
-    ctx.configure_mesh()
-        .disable_y_axis()
-        .label_style(("sans-serif", 20))
-        .draw()
-        .unwrap();
+fn all(plot: Option<PathBuf>) {
+    if let Some(output_path) = plot {
+        plot::plot(output_path);
+    } else {
+        for f in SmallFloat::generate_all() {
+            output_float(f, false);
+        }
+    };
 }
 
 fn main() {
     let cli = Cli::parse();
 
     match cli.cmd {
-        Cmd::Plot { output_file } => plot(output_file),
-        Cmd::Evaluate {
-            binary,
-            raw,
-            format,
-        } => evaluate(binary, format, raw),
+        Cmd::Evaluate { binary, raw } => {
+            if let Err(err) = evaluate(binary, raw, cli.format) {
+                eprintln!("Error: {err}");
+                std::process::exit(1);
+            }
+        }
+        Cmd::All { plot } => {
+            if cli.format == FloatFormat::Small {
+                all(plot);
+            } else {
+                eprintln!("Format {:?} not supported for subcommand `all`", cli.format);
+                std::process::exit(1);
+            }
+        }
     }
 }

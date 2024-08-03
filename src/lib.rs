@@ -1,14 +1,15 @@
 use std::fmt;
 use std::fmt::Write;
 
-pub use small_float::SmallFloat;
 use util::*;
 pub use value::Value;
 
 mod parse;
-mod small_float;
 mod util;
 mod value;
+
+/// A custom 7-bit float type
+pub type SmallFloat = Ieee754<3, 3>;
 
 /// A single-precision float type
 pub type SingleFloat = Ieee754<8, 23>;
@@ -38,6 +39,23 @@ impl<const R: usize, const P: usize> Ieee754<R, P> {
             exp,
             mantissa,
         }
+    }
+
+    /// Generate all possible SmallFloats
+    pub fn generate_all() -> Vec<Self> {
+        let mut floats = Vec::with_capacity(pow2(Self::DIGITS));
+
+        for sign in [false, true] {
+            for exp in 0..pow2(R) {
+                let exp_bits = int_to_bits(exp);
+                for mantissa in 0..pow2(P) {
+                    let mantissa_bits = int_to_bits(mantissa);
+                    floats.push(Self::new(sign, exp_bits, mantissa_bits));
+                }
+            }
+        }
+
+        floats
     }
 
     /// Evaluate a IEEE-754 float into a [Value]
